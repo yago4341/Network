@@ -13,6 +13,10 @@
 //need for chaching to looks at time stamps 
 #include <sys/stat.h>
 #include<time.h>
+//need for file descriptors
+#include <fcntl.h>
+//need for curl
+#include <curl/curl.h>
 
 #define BACKLOG 64	 // how many pending connections queue will hold
 
@@ -45,13 +49,14 @@ void *get_in_addr(struct sockaddr *sa)
 	return &(((struct sockaddr_in6*)sa)->sin6_addr);
 }
 
+
 int sendall(int s, char *buf, int *len)
 {
 	printf("MADE IT TO SEND ALL!\n");
     int total = 0;        // how many bytes we've sent
     int bytesleft = *len; // how many we have left to send
     int n;
-
+	//printf("IN BUFFER:%s\n",buf);
     while(total < *len) {
         n = send(s, buf+total, bytesleft, 0);
         if (n == -1) { break; }
@@ -63,6 +68,27 @@ int sendall(int s, char *buf, int *len)
 
     return n==-1?-1:0; // return -1 on failure, 0 on success
 }
+
+size_t got_data(char *buffer, size_t itemsize, size_t nitems, void* stream){
+    int * client_socket_fd = (int *)stream;
+	//number of bytes dealing with
+    size_t total_size = itemsize * nitems;
+    printf("%s\n", buffer);
+    send(client_socket_fd, buffer, total_size, 0);
+    return total_size;
+}
+
+//hash function
+unsigned long hash(unsigned char *str)
+{
+	unsigned long hash = 5381;
+	int c;
+	while (c = *str++){
+		hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
+	}
+	return hash;
+}
+
 
 //cache function
 void cacheHandler(char filename)
@@ -109,13 +135,12 @@ void clientHandler(int new_fd){
 	char *IPbuffer;
     bzero(hosty, 300);
     sscanf(buf, "%s %s %s %s %s", method, address, version, word, hosty);
-	if((strcmp("GET", method)) != 0){
-		if (send(new_fd, "HTTP/1.1 400 Bad Request\r\n Content-Length:15 \r\n\r\n400 Bad Request",61, 0) == -1){
-			perror("send");
-        }
-        perror("Could not parse header");
-	}
-	
+	// if((strcmp("GET", method)) != 0){
+	// 	if (send(new_fd, "HTTP/1.1 400 Bad Request\r\n Content-Length:15 \r\n\r\n400 Bad Request",61, 0) == -1){
+	// 		perror("send");
+    //     }
+    //     perror("Could not parse header");
+	// }
 	struct hostent *host_entry =  gethostbyname(hosty);
 	IPbuffer = inet_ntoa(*((struct in_addr*) host_entry->h_addr_list[0]));
 	printf("Ip adddress: %s\n",IPbuffer);
@@ -125,7 +150,7 @@ void clientHandler(int new_fd){
             exit(0);
         }
 	}
-
+	printf("POINT1\n");
 	//checking blocklist
 	FILE *fp;
 	fp = fopen("blocklist.txt", "r");
@@ -141,104 +166,138 @@ void clientHandler(int new_fd){
 	}
 	fclose(fp);
 
+	curl_global_init(CURL_GLOBAL_DEFAULT);
+
+	CURL *curl = curl_easy_init();
+
+    //Make sure initalize correctly
+    if(!curl){
+        perror("Error with init curl");
+        printf("ERROR");
+    }
+
+    //Set options
+    curl_easy_setopt(curl,CURLOPT_URL,address);
+	//includes the header 
+	curl_easy_setopt(curl,CURLOPT_HEADER, 1L);
+	//allows uo to 3 connections
+	curl_easy_setopt(curl, CURLOPT_MAXCONNECTS, 3L);
+	//for debugging
+	//curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+    //callback function
+    curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION, got_data);
+	//allows me to send the client socket so it sends it 
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *) &new_fd);
+
+    //Perform our action. connect to url and download it contents
+    CURLcode result = curl_easy_perform(curl);
+    if(result!= CURLE_OK){
+        printf(stderr, "Download problem : %s\n");
+    }
+
+    curl_easy_cleanup(curl);
+
 	//cacheHandler(hosty);
 
-	int sockfd, connfd;
-    struct sockaddr_in servaddr, cli;
+	// int sockfd, connfd;
+    // struct sockaddr_in servaddr, cli;
  
-    // socket create and verification
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd == -1) {
-        printf("socket creation failed...\n");
-        exit(0);
-    }
-    else
-        printf("Socket successfully created..\n");
-    bzero(&servaddr, sizeof(servaddr));
+    // // socket create and verification
+    // sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    // if (sockfd == -1) {
+    //     printf("socket creation failed...\n");
+    //     exit(0);
+    // }
+    // else
+    //     printf("Socket successfully created..\n");
+    // bzero(&servaddr, sizeof(servaddr));
  
-    // assign IP, PORT
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_addr.s_addr = inet_addr(IPbuffer);
-    servaddr.sin_port = htons(POR);
+    // // assign IP, PORT
+    // servaddr.sin_family = AF_INET;
+    // servaddr.sin_addr.s_addr = inet_addr(IPbuffer);
+    // servaddr.sin_port = htons(POR);
  
-    // connect the client socket to server socket
-    if (connect(sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr))!= 0) {
-        printf("connection with the server failed...\n");
-        exit(0);
-    }
-    else{
-        printf("connected to the server..\n");
-	}
-	write(sockfd, buf, BUFSIZE);
+    // // connect the client socket to server socket
+    // if (connect(sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr))!= 0) {
+    //     printf("connection with the server failed...\n");
+    //     exit(0);
+    // }
+    // else{
+    //     printf("connected to the server..\n");
+	// }
+	// write(sockfd, buf, BUFSIZE);
 
-	//Creating file name
-	char filnam[100];
-	bzero(filnam, 100);
-	strcat(filnam, "./cache/");
-	strcat(filnam, hosty);
-	//opening file and writing to it
-	FILE *fptr; 
-	fptr = fopen(filnam, "wb");
+	// //Creating file name
+	// char filnam[100];
+	// bzero(filnam, 100);
+	// strcat(filnam, "./cache/");
+	// strcat(filnam, hosty);
 
-	bzero(buf,BUFSIZE);
-	int n;
-	while(n = (recv(sockfd, buf, BUFSIZE, 0)) > 0){
-		printf("In while loop sending data\n");
-		if (sendall(new_fd, buf, &n) == -1) {
-    		perror("sendall");
-    		printf("We only sent %d bytes because of the error!\n", n);
-		}
-		printf("AFTER send all\n");
-		//send(new_fd, buf, BUFSIZE, 0);
-		fprintf(fptr,buf);
-		bzero(buf, BUFSIZE);
-	}
+	// // unsigned long filn = hash(filnam);
+	// // printf("File name is %d\n", filn);
 
-	//send(new_fd, buf, BUFSIZE, 0);
+	// //opening file and writing to it
+	// // int fd;
+	// // fd = open(filnam, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	// FILE *fptr; 
+	// // fptr = fdopen(fd, "wb");
+	// fptr= fopen(filnam, "wb");
 
-	/*Used https://www.geeksforgeeks.org/strstr-in-ccpp/ for parseing*/
-	// char str1[] = "Length: ";
-	// char *p = strstr(buf, str1);
-	// char contLen[8];
-	// char word2[16];
-	// sscanf(p, "%s %s", word2, contLen);
-	// int clen= atoi(contLen);
-	// printf("Length of file: %d\n",clen );
+	// bzero(buf,BUFSIZE);
+	// int n;
+	// while(n = (recv(sockfd, buf, BUFSIZE, 0)) > 0){
+	// 	printf("In while loop sending data\n");
+	// 	//printf("IN BUFFER: %s\n", buf);
+	// 	int len = n;
+	// 	if(sendall(new_fd, buf, &len) == -1){
+    // 		perror("sendall");
+    // 		printf("We only sent %d bytes because of the error!\n", n);
+	// 	}
+	// 	//fprintf(fptr,buf);
+	// 	//send(new_fd, buf, BUFSIZE, 0);
+	// 	fprintf(fptr,buf);
+	// 	printf("MADE IT HERERERERE\n");
 
-	fclose(fptr);
-	printf("Finished\n");
+	// 	bzero(buf, BUFSIZE);
+	// 	printf("WOWOWOWOWO\n");
+	// }
+
+	// //close(fpf);
+	// fclose(fptr);
+	// printf("Finished\n");
 
 
 	//opening the file and reading it 
 	// FILE *fpt;
-	// fpt = fopen(hosty, "rb");
+	// fpt = fopen(filn, "rb");
 	// /*Getting the size of the file by using 
     // https://www.geeksforgeeks.org/ftell-c-example/*/
     // fseek(fpt, 0L, SEEK_END);
     // int fileSize = ftell(fpt);
-    // //resetting the location of the file
+    //resetting the location of the file
     // fseek(fpt, 0L, SEEK_SET);
 	// int total = 0;
-    // int red, n;
+    // int red, t;
     // while(total < fileSize){
     //     bzero(buf, BUFSIZE);
     //     red = fread(buf, sizeof(char),BUFSIZE, fpt);
     //     printf("How much read: %d\n", red);
-    //     n = send(new_fd, buf, BUFSIZE, 0);
+    //     t = send(new_fd, buf, BUFSIZE, 0);
     //     total = total + red;
-    //     if(n == red){
+    //     if(t == red){
     //         printf("ALL IS WELL!");
     //     }
     //     printf("Total: %d\n", total);
     //     if(red == n){
     //         perror("Sending");
     //     }
+	// 	printf("HEYEYEYE\n");
     // }
 	// fclose(fpt);
-
+	printf("MADE IT TO THE END\n");
 
     //printf("From Server : %s\n", buf);
-	close(sockfd);
+	//close(sockfd);
 
 
 }
